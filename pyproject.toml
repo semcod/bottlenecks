@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bottlenecks"
+version = "0.1.0"
+description = "Find bottlenecks everywhere: Python code (static), runtime (cProfile), pipelines/DAGs and host system resources"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{name = "Tom Sapletta", email = "tom@sapletta.com"}]
+requires-python = ">=3.9"
+keywords = ["bottleneck", "performance", "profiling", "static-analysis", "critical-path", "dag", "monitoring"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: System :: Monitoring",
+]
+dependencies = []
+
+[project.optional-dependencies]
+system = ["psutil>=5.9"]
+dev = ["pytest>=7", "build>=1.0", "twine>=5.0",
+    "goal>=2.1.0; python_version >= '3.12'",
+    "costs>=0.1.53; python_version >= '3.9'",
+]
+
+[project.urls]
+Homepage = "https://github.com/semcod/bottlenecks"
+Repository = "https://github.com/semcod/bottlenecks"
+Issues = "https://github.com/semcod/bottlenecks/issues"
+
+[project.scripts]
+bottlenecks = "bottlenecks.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.costs]
+# AI Cost tracking configuration
+badge = true
+update_readme = true
+readme_path = "README.md"
+default_model = "openrouter/qwen/qwen3-coder-next"
+analysis_mode = "byok"
+full_history = true
+max_commits = 500
+
+# Cost thresholds for badge colors (USD)
+badge_color_thresholds = { low = 1.0, medium = 5.0, high = 10.0, critical = 50.0 }
