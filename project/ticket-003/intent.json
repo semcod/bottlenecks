@@ -1,0 +1,78 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-003",
+  "summary": "Bump bottlenecks package version to 0.2.0",
+  "workstream": "integration",
+  "classification": {
+    "kind": "SERVICE",
+    "priority": "P2",
+    "origin": "requested"
+  },
+  "allowedPaths": [
+    "project/ticket-003/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "VERSION",
+    "pyproject.toml",
+    "uv.lock"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "ba88f652a4d41ea2eca2628ba0e711810b1f705c",
+    "architecture": {
+      "components": [
+        {
+          "name": "packaging",
+          "paths": [
+            "VERSION",
+            "pyproject.toml",
+            "uv.lock"
+          ]
+        }
+      ],
+      "dataChanges": [],
+      "decision": "Bump package metadata version from 0.1.0 to 0.2.0 across VERSION, pyproject.toml, and uv.lock without altering runtime dependencies.",
+      "interfaceChanges": [],
+      "responsibilityChanges": false,
+      "rollback": "Revert the version bump merge commit on main.",
+      "status": "accepted",
+      "ui": {
+        "evidence": [],
+        "impact": "none",
+        "states": []
+      }
+    },
+    "budgets": {
+      "maxAffectedComponents": 1,
+      "maxImplementationFiles": 3,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "complexity": "S",
+    "estimatedMinutes": 15,
+    "nonGoals": [
+      "No runtime code or dependency version changes",
+      "No PyPI upload inside this repository PR"
+    ],
+    "outcome": "Update bottlenecks package version metadata to 0.2.0 cleanly ahead of the PyPI 0.2.0 release.",
+    "runtimeDependencies": [],
+    "targetBranch": "main",
+    "validation": [
+      {
+        "commands": [
+          "./project/governance-check.sh --actor agent",
+          "PYTHONPATH=src python3 -m pytest -q",
+          "wellman check"
+        ],
+        "criterion": "AC-01",
+        "evidence": "GOV-PASS, 44 passed with bottlenecks.__version__ == 0.2.0, wellman check passed."
+      }
+    ]
+  }
+}
