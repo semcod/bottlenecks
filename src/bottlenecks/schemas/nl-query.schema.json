@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/semcod/bottlenecks/schemas/nl-query.schema.json",
+  "title": "Natural language query envelope (wellmanifest/nl-dsl-llm nl-query + confirm)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query"],
+  "properties": {
+    "query": {"type": "string", "minLength": 1, "description": "Polish, English or mixed, e.g. 'pokaż 5 najgorszych wąskich gardeł w kodzie src'"},
+    "locale": {"type": "string", "enum": ["auto", "pl", "en"], "default": "auto"},
+    "context": {"type": "object", "additionalProperties": true},
+    "allowLlmFallback": {"type": "boolean", "default": true},
+    "confirm": {"type": "boolean", "default": false, "description": "Required to run actions with process/write effects."}
+  }
+}

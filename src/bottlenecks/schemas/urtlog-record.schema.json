@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/semcod/bottlenecks/schemas/urtlog-record.schema.json",
+  "title": "Ledger record = uritime.urtlog.record/v2 (subset written by bottlenecks)",
+  "description": "One line of events.jsonl. Shape identical to urtlog.dsl.UrtEventRecord.to_dict(), so urtlog can ingest it (store._record_from_json / append-dsl).",
+  "type": "object",
+  "required": ["schema", "event_id", "kind", "source", "urt", "uri", "inputs", "outputs", "status", "stage", "dsl"],
+  "properties": {
+    "schema": {"const": "uritime.urtlog.record/v2"},
+    "event_id": {"type": "string", "pattern": "^evt-[0-9a-f]{16}$"},
+    "kind": {"enum": ["log", "intent"]},
+    "source": {"const": "bottlenecks"},
+    "urt": {"type": "object", "required": ["kind", "at", "at_us", "time_path"], "properties": {
+      "kind": {"enum": ["instant", "interval", "rate", "relative"]},
+      "at": {"type": "string"}, "at_us": {"type": "integer"},
+      "time_path": {"type": "string", "pattern": "^t/\\d{4}/\\d{2}/\\d{2}/\\d{2}/\\d{2}/\\d{2}\\.\\d{6}$"},
+      "start": {"type": ["string", "null"]}, "end": {"type": ["string", "null"]},
+      "step_seconds": {"type": "integer", "minimum": 0}}},
+    "uri": {"type": "object", "required": ["raw", "op_path"], "properties": {
+      "raw": {"type": "string", "pattern": "^proc://bottlenecks/[a-z0-9_-]+/[a-z0-9_-]+/v1(\\?[^\\s,()]*)?$"},
+      "op_path": {"type": "string", "pattern": "^op/proc/bottlenecks/"}}},
+    "inputs": {"type": "array", "items": {"$ref": "#/$defs/ref"}},
+    "outputs": {"type": "array", "items": {"$ref": "#/$defs/ref"}},
+    "status": {"enum": ["planned", "started", "succeeded", "failed", "unknown", "canceled"]},
+    "stage": {"enum": ["commissioned", "started", "completed"]},
+    "run_id": {"type": ["string", "null"]},
+    "causation_id": {"type": ["string", "null"], "description": "PLAN event id that caused this LOG"},
+    "metadata": {"type": "object", "properties": {
+      "action_id": {"type": "string"}, "input_key": {"type": "string"}, "canonical_dsl": {"type": "string"},
+      "findings": {"type": "array"}, "worst_severity": {"type": "string"}}},
+    "dsl": {"type": "string", "pattern": "^(LOG|PLAN) URT\\("}
+  },
+  "$defs": {"ref": {"type": "object", "required": ["urn", "res_path"], "properties": {
+    "urn": {"type": "string", "pattern": "^(urn:bottlenecks:(input|report|finding):[^\\s,()]+|ni://[^\\s,()]+)$"},
+    "res_path": {"type": "string", "pattern": "^res/"},
+    "role": {"type": "string"}, "digest": {"type": ["string", "null"]}, "planned": {"type": "boolean"}}}}
+}

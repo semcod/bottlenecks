@@ -115,7 +115,8 @@ def analyze_dag(tasks: Sequence[Mapping[str, Any]], workers: Optional[int] = Non
             report.items.append(Bottleneck(
                 "pipeline", "choke-point", name,
                 f"blocks {len(descendants)} of {total - 1} downstream tasks ({len(kids)} direct)",
-                min(1.0, 0.15 + 0.5 * ratio), suggestion="make it fail fast, isolate failures and start independent branches early",
+                min(1.0, 0.15 + 0.5 * ratio),
+                suggestion="make it fail fast, isolate failures and start independent branches early",
                 metrics={"descendants": len(descendants), "direct_children": len(kids)}))
         deps = graph[name]["deps"]
         if len(deps) >= 4:
@@ -197,3 +198,152 @@ def analyze_pipeline(spec: Mapping[str, Any]) -> Report:
     if not report.summary:
         raise ValueError("pipeline spec must contain 'tasks' and/or 'stages'")
     return report
+
+
+# --------------------------------------------------------------------------
+# Bottlenecks in *recorded executions* (uritime/urtlog record v2 event logs)
+# --------------------------------------------------------------------------
+def _ts(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    from .ledger import parse_utc_us
+
+    return parse_utc_us(value) / 1_000_000
+
+
+def _percentile(values: List[float], q: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    idx = min(len(ordered) - 1, max(0, int(round(q * (len(ordered) - 1)))))
+    return ordered[idx]
+
+
+def analyze_events(records: Sequence[Mapping[str, Any]], op_prefix: Optional[str] = None,
+                   min_share: float = 0.1) -> Report:
+    """Find bottlenecks in executed operations recorded as urtlog ``LOG`` records.
+
+    * ``slow-operation``    – operation (``op_path``) taking a disproportionate share of busy time
+    * ``tail-latency``      – p95 far above the median (unstable / contended operation)
+    * ``failing-operation`` – high failure rate (retries waste capacity)
+    * ``critical-operation`` – on the critical path of the URN lineage DAG
+      (``URN_OUT`` of one run feeding ``URN_IN`` of another)
+    * ``handoff-latency``   – long idle gap between a producer finishing and its consumer starting
+    """
+    runs = _collect_runs(records, op_prefix)
+    report = Report()
+    if not runs:
+        report.summary["events"] = {"runs": 0, "operations": 0}
+        return report
+    busy = sum(r["dur"] for r in runs) or 1e-12
+    by_op: Dict[str, List[Dict[str, Any]]] = {}
+    for r in runs:
+        by_op.setdefault(r["op"], []).append(r)
+    ops_summary: Dict[str, Dict[str, Any]] = {}
+    for op, items in by_op.items():
+        stats = _op_stats(items, busy)
+        ops_summary[op] = stats
+        report.extend(_operation_findings(op, stats, len(by_op), min_share))
+    lineage_items, dag_summary, n_edges = _lineage_findings(runs, min_share)
+    report.extend(lineage_items)
+    top_ops = dict(sorted(ops_summary.items(), key=lambda kv: -kv[1]["total_s"])[:10])
+    report.summary["events"] = {"runs": len(runs), "operations": len(by_op), "busy_seconds": round(busy, 6),
+                                "lineage_edges": n_edges, **dag_summary, "top_operations": top_ops}
+    return report
+
+
+def _collect_runs(records: Sequence[Mapping[str, Any]], op_prefix: Optional[str]) -> List[Dict[str, Any]]:
+    runs = []
+    for rec in records:
+        op = rec.get("uri", {}).get("op_path", "op/unknown")
+        if rec.get("kind") != "log" or (op_prefix and not op.startswith(op_prefix)):
+            continue
+        urt = rec.get("urt", {})
+        start, end = _ts(urt.get("start")), _ts(urt.get("end"))
+        if start is None or end is None or end < start:
+            continue
+        runs.append({"id": rec.get("event_id"), "op": op, "start": start, "end": end, "dur": end - start,
+                     "status": rec.get("status"), "inputs": [r.get("urn") for r in rec.get("inputs") or ()],
+                     "outputs": [r.get("urn") for r in rec.get("outputs") or ()]})
+    return runs
+
+
+def _op_stats(items: List[Dict[str, Any]], busy: float) -> Dict[str, Any]:
+    durs = [r["dur"] for r in items]
+    total = sum(durs)
+    return {"runs": len(items), "total_s": round(total, 6), "share": round(total / busy, 4),
+            "p50_s": round(_percentile(durs, 0.5), 6), "p95_s": round(_percentile(durs, 0.95), 6),
+            "failed": sum(1 for r in items if r["status"] == "failed")}
+
+
+def _operation_findings(op: str, s: Dict[str, Any], n_ops: int, min_share: float) -> List[Bottleneck]:
+    out = []
+    share, runs, p50, p95 = s["share"], s["runs"], s["p50_s"], s["p95_s"]
+    if n_ops > 1 and share >= max(min_share, 1.5 / n_ops):  # disproportionate vs. a fair share
+        out.append(Bottleneck(
+            "pipeline", "slow-operation", op,
+            f"{share:.0%} of busy time ({s['total_s']:.3f}s over {runs} run(s), p95 {p95:.3f}s)",
+            min(1.0, 0.2 + share), suggestion="optimise or cache this operation – it dominates execution time",
+            metrics=s))
+    if runs >= 5 and p50 > 0 and p95 >= 3 * p50:
+        out.append(Bottleneck(
+            "pipeline", "tail-latency", op, f"p95 {p95:.3f}s is {p95 / p50:.1f}x the median {p50:.3f}s",
+            min(0.9, 0.3 + 0.05 * (p95 / p50)), suggestion="look for contention, cold caches or retries", metrics=s))
+    rate = s["failed"] / runs if runs else 0.0
+    if runs >= 3 and rate >= 0.2:
+        out.append(Bottleneck(
+            "pipeline", "failing-operation", op, f"{s['failed']}/{runs} runs failed ({rate:.0%})",
+            min(1.0, 0.3 + 0.6 * rate), suggestion="fix the root cause – failed runs and retries burn capacity",
+            metrics=s))
+    return out
+
+
+def _lineage_graph(runs: List[Dict[str, Any]]):
+    """Producer→consumer edges where a run's ``URN_OUT`` is another run's ``URN_IN``."""
+    producer: Dict[str, Dict[str, Any]] = {}
+    for r in sorted(runs, key=lambda r: r["end"]):
+        for urn in r["outputs"]:
+            if urn and not urn.startswith("urn:bottlenecks:finding:"):
+                producer.setdefault(urn, r)
+    by_id = {r["id"]: r for r in runs}
+    tasks, edges = [], []
+    for r in runs:
+        deps = sorted({producer[u]["id"] for u in r["inputs"] if u in producer and producer[u]["id"] != r["id"]})
+        tasks.append({"name": r["id"], "duration": r["dur"], "deps": deps})
+        edges.extend((by_id[d], r) for d in deps)
+    return by_id, tasks, edges
+
+
+def _lineage_findings(runs: List[Dict[str, Any]], min_share: float):
+    by_id, tasks, edges = _lineage_graph(runs)
+    if not edges:
+        return [], {}, 0
+    items: List[Bottleneck] = []
+    summary: Dict[str, Any] = {}
+    try:
+        cp: Optional[Dict[str, Any]] = critical_path(tasks)
+    except (CycleError, ValueError):
+        cp = None
+    if cp and cp["makespan"]:
+        chain = [by_id[n] for n in cp["critical_path"]]
+        summary = {"critical_path": [r["op"] for r in chain], "critical_seconds": round(cp["makespan"], 6),
+                   "wall_seconds": round(max(r["end"] for r in chain) - min(r["start"] for r in chain), 6),
+                   "parallelism": round(cp["parallelism"], 3)}
+        for r in chain:
+            share = r["dur"] / cp["makespan"]
+            if share >= max(min_share, 0.2):
+                items.append(Bottleneck(
+                    "pipeline", "critical-operation", r["op"],
+                    f"on the critical path of the lineage DAG, {share:.0%} of {cp['makespan']:.3f}s",
+                    min(1.0, 0.25 + share), suggestion="speeding this up shortens the whole chain",
+                    metrics={"event_id": r["id"], "duration_s": round(r["dur"], 6), "share": round(share, 4)}))
+    for prod, cons in edges:
+        gap = cons["start"] - prod["end"]
+        if gap > max(1.0, 0.5 * cons["dur"]):
+            items.append(Bottleneck(
+                "pipeline", "handoff-latency", f"{prod['op']} -> {cons['op']}",
+                f"consumer started {gap:.1f}s after its input was produced",
+                min(0.8, 0.2 + 0.6 * gap / (gap + cons["dur"] + prod["dur"])),
+                suggestion="trigger downstream work on completion events instead of polling/schedules",
+                metrics={"gap_s": round(gap, 3), "producer": prod["id"], "consumer": cons["id"]}))
+    return items, summary, len(edges)

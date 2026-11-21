@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/semcod/bottlenecks/schemas/dsl-result.schema.json",
+  "title": "bottlenecks unified result envelope (wellmanifest/nl-dsl-llm dsl-result + CLARIFY)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["success", "status", "data", "errors", "meta"],
+  "properties": {
+    "success": {"type": "boolean"},
+    "status": {"type": "string", "enum": ["OK", "NOT_FOUND", "VALIDATION_ERROR", "EXECUTION_ERROR", "UNAUTHORIZED", "CLARIFY"]},
+    "data": {"description": "Report ({summary,count,worst_severity,items,shown}), action-specific object, or {clarify:{question,options}}."},
+    "errors": {"type": "array", "items": {"type": "object", "required": ["code", "message"], "properties": {
+      "code": {"type": "string"}, "message": {"type": "string"}, "field": {"type": ["string", "null"]}}}},
+    "meta": {"type": "object", "required": ["executionTimeMs", "sourceLayer"], "properties": {
+      "executionTimeMs": {"type": "number", "minimum": 0},
+      "sourceLayer": {"type": "string", "enum": ["direct_dsl", "nl_fast_path", "semantic_cache", "llm_fallback", "plan_executor"]},
+      "canonicalDsl": {"type": ["string", "null"]},
+      "traceId": {"type": ["string", "null"]},
+      "actionId": {"type": "string"},
+      "actionUri": {"type": "string", "pattern": "^proc://bottlenecks/"},
+      "effects": {"type": "array", "items": {"enum": ["pure", "read", "process", "write", "network"]}},
+      "eventId": {"type": "string", "description": "urtlog event id of the LOG record (when a ledger is configured)"},
+      "runId": {"type": "string"},
+      "urtlog": {"type": "string", "description": "the LOG record as a urtlog DSL line"}
+    }}
+  }
+}
