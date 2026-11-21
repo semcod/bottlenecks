@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,6 +7,7 @@ from bottlenecks import (
     Report, analyze_dag, analyze_metrics, analyze_pipeline, analyze_source, analyze_stages,
     critical_path, profile, profile_callable, render,
 )
+from bottlenecks import system
 from bottlenecks.cli import run
 from bottlenecks.pipeline import CycleError
 
@@ -105,6 +107,54 @@ def test_system_metrics():
     assert {"cpu-saturation", "run-queue", "io-wait", "memory-pressure", "swapping", "disk-full"} <= kinds(report.items)
     assert not analyze_metrics({"cpu_count": 4, "cpu_percent": 10, "load_avg": (0.5, 0.5, 0.5),
                                 "mem_percent": 30, "disk_percent": {"/": 40}}).items
+
+
+def test_linux_pressure_remains_visible_when_load_is_not_a_runnable_backlog(tmp_path):
+    (tmp_path / "stat").write_text("cpu 1 2 3 4\nprocs_running 6\nprocs_blocked 34\n")
+    pressure = tmp_path / "pressure"
+    pressure.mkdir()
+    (pressure / "io").write_text(
+        "some avg10=73.32 avg60=66.53 avg300=67.82 total=1\n"
+        "full avg10=32.96 avg60=24.23 avg300=27.69 total=1\n"
+    )
+    (pressure / "memory").write_text("some avg60=11.20\nfull avg60=bad\n")
+    metrics = {
+        "cpu_count": 16,
+        "load_avg": (1358.44, 1264.51, 1058.17),
+        **system._linux_scheduler(tmp_path),
+        "pressure_avg60_percent": system._linux_pressure(tmp_path),
+    }
+
+    report = analyze_metrics(metrics)
+
+    assert kinds(report.items) == {"io-pressure", "memory-stall"}
+    assert report.summary["system"]["io_blocked_processes"] == 34
+    assert metrics["pressure_avg60_percent"] == {
+        "io": {"some": 66.53, "full": 24.23},
+        "memory": {"some": 11.20},
+    }
+    metrics["runnable_processes"] = 32
+    assert "run-queue" in kinds(analyze_metrics(metrics).items)
+
+
+def test_psutil_io_wait_is_not_cpu_busy_time(monkeypatch):
+    times = SimpleNamespace(idle=10.0, iowait=55.0)
+    proc = SimpleNamespace(cpu_times_percent=lambda interval: times)
+    monkeypatch.setattr(system, "psutil", proc)
+
+    assert system._cpu_and_iowait(0.0) == (35.0, 55.0)
+
+
+def test_disk_availability_excludes_reserved_blocks(monkeypatch):
+    usage = SimpleNamespace(total=100, used=90, free=5)
+    monkeypatch.setattr(system.shutil, "disk_usage", lambda mount: usage)
+    monkeypatch.setattr(system, "_cpu_and_iowait", lambda interval: (None, None))
+    monkeypatch.setattr(system, "_top_processes", lambda: [])
+
+    metrics = system.collect_metrics()
+
+    assert metrics["disk_available_bytes"] == {"/": 5}
+    assert metrics["disk_percent"]["/"] == pytest.approx(100 * 90 / 95)
 
 
 def test_render_formats():
