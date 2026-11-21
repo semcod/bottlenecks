@@ -1,0 +1,102 @@
+{
+  "allowedPaths": [
+    "project/ticket-001/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    ".aider.conf.yml",
+    ".cursor/rules/**",
+    ".gitattributes",
+    ".githooks/**",
+    ".github/copilot-instructions.md",
+    ".github/workflows/new-project-branch-hygiene.yml",
+    ".github/workflows/new-project-governance.yml",
+    ".gitignore",
+    ".governance/**",
+    ".subactor/**",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    "project.bat",
+    "project.sh",
+    "project/**",
+    "scripts/install-agent-hosts.sh",
+    "scripts/runtime.sh",
+    "wellmanifest_governance.py",
+    "worktree-guard.yaml",
+    "pyproject.toml"
+  ],
+  "classification": {
+    "kind": "SERVICE",
+    "origin": "health",
+    "priority": "P2"
+  },
+  "conflictsWith": [],
+  "delivery": {
+    "acceptedBaseSha": "9bf48231caab71f037838739b9d7e0b34113ee17",
+    "architecture": {
+      "components": [
+        {
+          "name": "governance",
+          "paths": [
+            ".governance/**",
+            ".githooks/**",
+            "project/**",
+            "pyproject.toml"
+          ]
+        }
+      ],
+      "dataChanges": [],
+      "decision": "Install immutable published wellmanifest/new-project 0.20.166 assets and bind pytest to -p wellmanifest_governance.",
+      "interfaceChanges": [],
+      "responsibilityChanges": false,
+      "rollback": "Revert the governance adoption merge commit on main.",
+      "status": "accepted",
+      "ui": {
+        "evidence": [],
+        "impact": "none",
+        "states": []
+      }
+    },
+    "budgets": {
+      "maxAffectedComponents": 2,
+      "maxImplementationFiles": 15,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "complexity": "M",
+    "estimatedMinutes": 30,
+    "nonGoals": [
+      "No runtime analyzer behavior changes in src/bottlenecks",
+      "No PyPI version bump in this governance adoption PR"
+    ],
+    "outcome": "Adopt published wellmanifest/new-project 0.20.166 native governance and pytest governance plugin in semcod/bottlenecks.",
+    "runtimeDependencies": [],
+    "standardAdoption": {
+      "fromRevision": null,
+      "sourceRepository": "wellmanifest/new-project",
+      "toRevision": "c9bb73ce5ce861e78c26619e36e5b016fda56e2d"
+    },
+    "targetBranch": "main",
+    "validation": [
+      {
+        "commands": [
+          "./project/governance-check.sh --actor agent",
+          "PYTHONPATH=src python3 -m pytest -q",
+          "wellman check"
+        ],
+        "criterion": "AC-01",
+        "evidence": "GOV-PASS, 43 passed with -p wellmanifest_governance, wellman check 0 errors."
+      }
+    ]
+  },
+  "dependsOn": [],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "integrationTicket": null,
+  "schema": "new-project.intent/v3",
+  "stacks": [],
+  "summary": "Adopt wellmanifest/new-project 0.20.166 native governance",
+  "ticket": "ticket-001",
+  "workstream": "governance"
+}

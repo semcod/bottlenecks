@@ -43,7 +43,13 @@ bottlenecks = ["schemas/*.json", "profiles/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = [".", "src"]
+addopts = "-p wellmanifest_governance"
+
+[tool.wellmanifest]
+standard = "0.20.166"
+revision = "c9bb73ce5ce861e78c26619e36e5b016fda56e2d"
+gate = "project/governance-check.sh"
 
 [tool.costs]
 # AI Cost tracking configuration
