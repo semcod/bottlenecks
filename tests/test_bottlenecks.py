@@ -124,3 +124,11 @@ def test_cli(tmp_path, capsys):
     assert run(["code", str(src), "--fail-on", "medium"]) == 1
     assert run(["pipeline", str(spec)]) == 0
     assert run(["system", "--interval", "0.05", "-f", "json"]) == 0
+
+
+def test_version_matches_repo_version_file():
+    from pathlib import Path
+    import bottlenecks
+
+    expected = (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8").strip()
+    assert bottlenecks.__version__ == expected
