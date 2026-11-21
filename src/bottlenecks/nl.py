@@ -385,9 +385,9 @@ class LLMTranslator:
     """
 
     def __init__(self, registry: ActionRegistry, complete: Optional[Completion] = None, url: Optional[str] = None,
-                 model: Optional[str] = None, api_key: Optional[str] = None, timeout: float = 30.0) -> None:
+                 model: Optional[str] = None, bearer: Optional[str] = None, timeout: float = 30.0) -> None:
         self.registry = registry
-        self.url, self.model, self.api_key, self.timeout = url, model, api_key, timeout
+        self.url, self.model, self.bearer, self.timeout = url, model, bearer, timeout
         self._complete = complete
         self.last_error: Optional[str] = None
 
@@ -395,7 +395,7 @@ class LLMTranslator:
     def from_env(cls, registry: ActionRegistry) -> "LLMTranslator":
         return cls(registry, url=os.environ.get("BOTTLENECKS_LLM_URL") or None,
                    model=os.environ.get("BOTTLENECKS_LLM_MODEL") or None,
-                   api_key=os.environ.get("BOTTLENECKS_LLM_API_KEY") or None)
+                   bearer=os.environ.get("BOTTLENECKS_LLM_API_KEY") or None)
 
     @property
     def enabled(self) -> bool:
@@ -432,7 +432,7 @@ class LLMTranslator:
         req = urllib.request.Request(self.url.rstrip("/") + "/chat/completions",  # type: ignore[union-attr]
                                      data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json",
-                                              **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})})
+                                              **({"Authorization": f"Bearer {self.bearer}"} if self.bearer else {})})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 - user-configured endpoint
             payload = json.loads(resp.read().decode("utf-8"))
         return payload["choices"][0]["message"]["content"]
