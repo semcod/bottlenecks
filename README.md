@@ -4,77 +4,87 @@
 [![Python](https://img.shields.io/pypi/pyversions/bottlenecks.svg)](https://pypi.org/project/bottlenecks/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Finds bottlenecks in four places, and ranks them all in one report:
+Finds bottlenecks in **code, runtime, pipelines and the host system**. You can ask in Polish or English, type a canonical DSL command, or call it from REST or MCP. Every run is recorded as a [`uritime/urtlog`](https://github.com/uritime/urtlog) event, which gives you history, regressions and scheduled scans. The core has **zero dependencies**.
 
-| Domain     | What it finds | How |
-|------------|---------------|-----|
-| `code`     | nested loops (O(n^k)), blocking I/O in loops, `+=` string building, regex/sort in loops, high complexity, long functions | static AST analysis |
-| `runtime`  | hot functions, call-overhead hotspots, recursion | stdlib `cProfile` |
-| `pipeline` | critical path, choke points, join barriers (fan-in), serial chains, worker starvation, saturated queue stages | DAG and queueing math |
-| `system`   | CPU saturation, run queue/load, I/O wait, memory pressure, swapping, full disks | `psutil` (optional) or `/proc` |
+```text
+"pokaż 5 najgorszych wąskich gardeł w kodzie src"        ← NL (PL/EN), Layer 1 / 1.5 / 3
+        │ compiles to
+code.scan path=src top=5                                  ← canonical DSL (single execution surface)
+        │ Engine: registry-validated, effects-checked
+LOG URT(at=…, range=…) URI(proc://bottlenecks/code/scan/v1?path=src)
+    URN_IN(urn:bottlenecks:input:…) URN_OUT(urn:bottlenecks:report:…, urn:bottlenecks:finding:…) STATUS(succeeded)
+```
 
-Each finding is a `Bottleneck` with a `domain`, a `kind`, a `location`, a `score` from 0 to 1, a `severity`, a `suggestion` and raw `metrics`.
+The architecture follows [`wellmanifest/nl-dsl-llm`](https://github.com/wellmanifest/nl-dsl-llm), [`nl-api-llm`](https://github.com/wellmanifest/nl-api-llm) and [`nl-uri-dsl-llm`](https://github.com/wellmanifest/nl-uri-dsl-llm), with a `uritime/urtlog` record v2 ledger. See the [decision](docs/DECISION/NL_DSL_LLM_URTLOG_ARCHITECTURE.md) and the [architecture](docs/INFORMATION/BOTTLENECKS_ARCHITECTURE.md) docs.
 
-The core has **no dependencies**. To get richer system data, including top processes, install the `psutil` extra.
+## What it finds
+
+| Action (DSL) | Finds |
+|---|---|
+| `code.scan` | nested loops, blocking I/O in loops, `+=` string building, regex/sort in loops, complexity, long functions |
+| `runtime.profile` / `runtime.pstats` | hot functions, call overhead, recursion (cProfile) |
+| `pipeline.analyze` | critical path, choke points, fan-in, serial chains, worker starvation, saturated stages |
+| `pipeline.urtlog` | in **recorded executions** (any urtlog `events.jsonl`): slow, failing or tail-latency operations, the lineage critical path, handoff gaps |
+| `system.sample` | CPU, run queue, I/O wait, memory, swap, full disks (psutil optional) |
+| `history.diff` / `history.trend` / `history.lineage` | new, worsened and resolved bottlenecks between runs; trends; URN lineage |
+| `plan.schedule` / `plan.run_due` | recurring scans as urtlog `PLAN` records |
 
 ## Install
 
 ```bash
-pip install bottlenecks            # core, stdlib only
+pip install bottlenecks            # stdlib only
 pip install "bottlenecks[system]"  # + psutil
 ```
 
-## CLI
+## Use
 
 ```bash
-bottlenecks code src/ --top 20                  # static analysis
-bottlenecks code src/ --fail-on high            # CI gate (exit 1)
-bottlenecks run script.py arg1 arg2             # profile a script
-bottlenecks pstats out.prof                     # analyse a saved profile
-bottlenecks pipeline pipeline.json -f markdown  # DAG / stage analysis
-bottlenecks system --interval 1                 # host resources
-bottlenecks scan .                              # code + system
+# classic subcommands (unchanged)
+bottlenecks code src --top 10 --fail-on high
+bottlenecks system
+bottlenecks pipeline pipeline.json
+
+# natural language → DSL (PL/EN; prints the compiled DSL)
+bottlenecks ask "pokaż krytyczne wąskie gardła w kodzie src"
+bottlenecks ask "check system bottlenecks"
+bottlenecks ask "sprofiluj skrypt app.py" --yes        # process effect needs confirmation
+
+# canonical DSL, autocomplete, REPL
+bottlenecks dsl "code.scan path=src top=5 filter:domain=code"
+bottlenecks suggest "code"
+bottlenecks shell
+
+# history in a urtlog-compatible ledger (opt-in)
+export BOTTLENECKS_STATE_DIR=.bottlenecks
+bottlenecks code src && bottlenecks code src
+bottlenecks history diff --fail-on high                # CI regression gate
+bottlenecks plan schedule "code.scan path=src" --every 1h && bottlenecks plan run-due
+bottlenecks urtlog ~/.local/share/urtlog              # bottlenecks in any urtlog event log
+
+# other interfaces, same engine
+bottlenecks serve-rest --port 8765   # POST /dsl, POST /query, GET /suggest, /schema, /history
+bottlenecks serve-mcp                # tools: nl_ask, execute_dsl, suggest_options, list_actions
+bottlenecks self-test                # 12 conformance checks
 ```
 
-Output formats: `text` (default), `json`, `markdown`. Use `-o FILE` to write the report to a file.
+### Integration with urtlog and an LLM
 
-### Pipeline spec
-
-```json
-{
-  "workers": 4,
-  "tasks": [
-    {"name": "fetch",   "duration": 2},
-    {"name": "build",   "duration": 10, "deps": ["fetch"]},
-    {"name": "lint",    "duration": 1,  "deps": ["fetch"]},
-    {"name": "test",    "duration": 5,  "deps": ["build"]},
-    {"name": "publish", "duration": 1,  "deps": ["test", "lint"]}
-  ],
-  "arrival_rate": 2.5,
-  "stages": [
-    {"name": "parse", "service_time": 0.1},
-    {"name": "embed", "service_time": 1.0, "workers": 2},
-    {"name": "store", "service_time": 0.2}
-  ]
-}
-```
+- If `URTLOG_STATE_DIR` is set and `uritime-urtlog` is importable, every record is also mirrored into that urtlog store. Mirroring is fail-soft. You can then use `urtlog query --source bottlenecks` and `urtlog logic-tree --op-prefix op/proc/bottlenecks/`.
+- The LLM fallback (Layer 3) is off by default. To enable it, set `BOTTLENECKS_LLM_URL` (any OpenAI-compatible `/v1`, e.g. Ollama or OpenRouter), `BOTTLENECKS_LLM_MODEL` and optionally `BOTTLENECKS_LLM_API_KEY`. Its output is JSON-schema constrained and validated against the registry, and successful answers are learned into the semantic cache.
 
 ## Python API
 
 ```python
-from bottlenecks import analyze_code, profile, analyze_dag, analyze_system, render
+from bottlenecks import Engine, Ledger, analyze_code, render
 
-report = analyze_code("src/")
-report.merge(analyze_system())
-print(render(report, "text", top=10))
+engine = Engine(ledger=Ledger(".bottlenecks"))
+res = engine.ask("znajdź wąskie gardła w kodzie src")      # or engine.execute("code.scan path=src")
+print(res.meta["canonicalDsl"], res.meta["urtlog"])
+print(render(res.report, "text"))
 
-with profile(threshold=0.02) as p:
-    expensive()
-print(render(p.report))
-
-print(analyze_dag(tasks).summary["pipeline"]["critical_path"])
+print(render(analyze_code("src/"), "markdown"))            # analyzers are still plain functions
 ```
 
 ## License
 
-Licensed under Apache-2.0.
+Apache-2.0 © Tom Sapletta

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/semcod/bottlenecks/schemas/dsl-command.schema.json",
+  "title": "bottlenecks canonical DSL command (profile of wellmanifest/nl-dsl-llm dsl-command)",
+  "description": "Operation vocabulary is declared by the action registry (GET /schema -> registry.endpoints[].id = entity.operation). Text form: 'entity.operation key=value ... filter:key=value'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entity", "operation"],
+  "properties": {
+    "entity": {"type": "string", "pattern": "^[a-z0-9_-]+$", "enum": ["code", "runtime", "pipeline", "system", "scan", "history", "plan", "registry"]},
+    "operation": {"type": "string", "pattern": "^[a-z0-9_-]+$"},
+    "arguments": {"type": "object", "additionalProperties": true, "default": {}, "description": "Validated against registry parameters; unknown keys are rejected. 'top' and 'min_severity' are presentation arguments accepted by every report-producing action."},
+    "filters": {"type": "object", "additionalProperties": false, "default": {}, "properties": {
+      "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+      "domain": {"enum": ["code", "runtime", "pipeline", "system"]},
+      "kind": {"type": "string"}
+    }},
+    "idempotencyKey": {"type": ["string", "null"]},
+    "rawDsl": {"type": ["string", "null"]}
+  }
+}
