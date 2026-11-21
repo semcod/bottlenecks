@@ -11,7 +11,24 @@ Architecture (``wellmanifest/nl-dsl-llm`` + ``nl-api-llm`` + ``nl-uri-dsl-llm``,
                  Ledger: urtlog record/v2 LOG/PLAN 4-tuples (events.jsonl + SQLite prefix index)
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+from pathlib import Path
+
+
+def _resolve_version() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    version_file = repo_root / "VERSION"
+    if (repo_root / "pyproject.toml").is_file() and version_file.is_file():
+        text = version_file.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    try:
+        return _dist_version("bottlenecks")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
+__version__ = _resolve_version()
 
 from .code import analyze_code, analyze_source  # noqa: E402
 from .dsl import DSLCommand, DSLResult  # noqa: E402
