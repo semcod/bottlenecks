@@ -38,10 +38,24 @@
         {
           "name": "governance",
           "paths": [
-            ".governance/**",
+            ".aider.conf.yml",
+            ".cursor/rules/**",
+            ".gitattributes",
             ".githooks/**",
+            ".github/**",
+            ".gitignore",
+            ".governance/**",
+            ".subactor/**",
+            "AGENTS.md",
+            "CLAUDE.md",
+            "GEMINI.md",
+            "project.bat",
+            "project.sh",
             "project/**",
-            "pyproject.toml"
+            "pyproject.toml",
+            "scripts/**",
+            "wellmanifest_governance.py",
+            "worktree-guard.yaml"
           ]
         }
       ],
@@ -59,7 +73,7 @@
     },
     "budgets": {
       "maxAffectedComponents": 2,
-      "maxImplementationFiles": 15,
+      "maxImplementationFiles": 9,
       "maxPublicInterfaceChanges": 0,
       "maxRuntimeDependencies": 0
     },
