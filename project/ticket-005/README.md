@@ -23,6 +23,14 @@ and improvements to Bottlenecks and FixOS for HostGuard on 2026-11-22.
 - [x] AC-03: Disk usage includes actual available capacity and keeps the existing JSON fields.
 - [x] AC-04: Missing Linux counters leave the existing non-Linux fallback usable.
 
+## Follow-up from the same execution request
+
+On 2026-11-22 the host had very little swap left but changing memory pressure.
+AC-05 measures the input and output rate over the existing sampling interval,
+includes available swap, and retains occupancy as a separate signal.
+
+- [x] AC-05: Swap rates and capacity are distinct in the machine-readable report.
+
 ## Tracking boundary
 
 This directory contains the minimal reviewed intent. Optional participant prose

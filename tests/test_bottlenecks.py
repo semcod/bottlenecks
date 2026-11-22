@@ -157,6 +157,31 @@ def test_disk_availability_excludes_reserved_blocks(monkeypatch):
     assert metrics["disk_percent"]["/"] == pytest.approx(100 * 90 / 95)
 
 
+def test_linux_swap_capacity_and_activity_are_distinct(tmp_path):
+    vmstat = tmp_path / "vmstat"
+    vmstat.write_text("pswpin 40\npswpout 50\npgfault 9\n")
+    first = system._linux_swap_pages(tmp_path)
+    vmstat.write_text("pswpin 42\npswpout 50\n")
+    second = system._linux_swap_pages(tmp_path)
+
+    assert first == (40, 50)
+    assert second == (42, 50)
+    rates = system._swap_byte_rates(first, second, 2.0, 4096)
+    assert rates == {"in": 4096, "out": 0}
+    assert system._swap_byte_rates(second, first, 2.0, 4096) is None
+
+    vmstat.write_text("pswpin 2\n")
+    assert system._linux_swap_pages(tmp_path) is None
+    result = analyze_metrics({
+        "swap_percent": 99,
+        "swap_available_bytes": 4096,
+        "swap_io_bytes_per_second": rates,
+    })
+    finding = next(item for item in result.items if item.kind == "swapping")
+    assert finding.metrics["swap_available_bytes"] == 4096
+    assert finding.metrics["swap_io_bytes_per_second"] == rates
+
+
 def test_render_formats():
     report = analyze_pipeline({"tasks": TASKS})
     assert json.loads(render(report, "json"))["count"] == len(report.items)

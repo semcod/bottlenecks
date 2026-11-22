@@ -50,7 +50,8 @@ def _cpu_and_iowait(interval: float) -> Tuple[Optional[float], Optional[float]]:
 def _meminfo() -> Dict[str, float]:
     if psutil is not None:
         vm, sw = psutil.virtual_memory(), psutil.swap_memory()
-        return {"mem_percent": vm.percent, "mem_total": vm.total, "swap_percent": sw.percent}
+        return {"mem_percent": vm.percent, "mem_total": vm.total, "swap_percent": sw.percent,
+                "swap_available_bytes": sw.free}
     info: Dict[str, float] = {}
     try:
         with open("/proc/meminfo", encoding="ascii") as fh:
@@ -66,7 +67,9 @@ def _meminfo() -> Dict[str, float]:
     if total:
         out["mem_percent"] = 100.0 * (1 - avail / total)
     if swap_total:
-        out["swap_percent"] = 100.0 * (1 - info.get("SwapFree", 0.0) / swap_total)
+        swap_free = info.get("SwapFree", 0.0)
+        out["swap_available_bytes"] = swap_free
+        out["swap_percent"] = 100.0 * (1 - swap_free / swap_total)
     return out
 
 
@@ -119,16 +122,45 @@ def _linux_pressure(proc: Path) -> Dict[str, Dict[str, float]]:
     return pressures
 
 
+def _linux_swap_pages(proc: Path) -> Optional[Tuple[int, int]]:
+    counters = {}
+    try:
+        with (proc / "vmstat").open(encoding="ascii") as stream:
+            for line in stream:
+                key, _, value = line.partition(" ")
+                if key in {"pswpin", "pswpout"}:
+                    counters[key] = int(value)
+        return counters["pswpin"], counters["pswpout"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _swap_byte_rates(before: Tuple[int, int], after: Tuple[int, int], seconds: float,
+                     page_size: int) -> Optional[Dict[str, float]]:
+    pages_in = after[0] - before[0]
+    pages_out = after[1] - before[1]
+    if seconds <= 0 or min(pages_in, pages_out) < 0:
+        return None
+    return {"in": pages_in * page_size / seconds, "out": pages_out * page_size / seconds}
+
+
 def collect_metrics(interval: float = 0.5, mounts: Sequence[str] = ("/",)) -> Dict[str, Any]:
     """Collect a snapshot of host metrics."""
+    proc = Path("/proc")
+    start = time.monotonic()
+    swap_before = _linux_swap_pages(proc) if interval > 0 else None
     cpu, iowait = _cpu_and_iowait(interval)
+    swap_after = _linux_swap_pages(proc) if swap_before is not None else None
+    elapsed = time.monotonic() - start
     metrics: Dict[str, Any] = {"cpu_count": os.cpu_count() or 1, "cpu_percent": cpu, "iowait_percent": iowait}
     try:
         metrics["load_avg"] = os.getloadavg()
     except (OSError, AttributeError):
         metrics["load_avg"] = None
     metrics.update(_meminfo())
-    proc = Path("/proc")
+    if swap_before is not None and swap_after is not None:
+        if rates := _swap_byte_rates(swap_before, swap_after, elapsed, os.sysconf("SC_PAGE_SIZE")):
+            metrics["swap_io_bytes_per_second"] = rates
     metrics.update(_linux_scheduler(proc))
     if pressure := _linux_pressure(proc):
         metrics["pressure_avg60_percent"] = pressure
@@ -205,9 +237,13 @@ def analyze_metrics(metrics: Dict[str, Any], cpu_warn: float = 80.0, mem_warn: f
                                 metrics={"mem_percent": mem}))
     swap = metrics.get("swap_percent")
     if swap is not None and (s := _ramp(swap, swap_warn, 90.0)):
+        swap_metrics = {"swap_percent": swap}
+        for field in ("swap_available_bytes", "swap_io_bytes_per_second"):
+            if field in metrics:
+                swap_metrics[field] = metrics[field]
         items.append(Bottleneck("system", "swapping", "swap", f"swap used {swap:.0f}%", s,
-                                suggestion="check current swap traffic and memory pressure before reducing workloads",
-                                metrics={"swap_percent": swap}))
+                                suggestion="check sampled swap traffic and memory pressure before reducing workloads",
+                                metrics=swap_metrics))
     for mount, pct in (metrics.get("disk_percent") or {}).items():
         if (s := _ramp(pct, disk_warn, 99.0)):
             items.append(Bottleneck("system", "disk-full", mount, f"filesystem {mount} {pct:.0f}% full", s,
