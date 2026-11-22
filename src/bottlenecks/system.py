@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import Bottleneck, Report
@@ -33,7 +34,8 @@ def _read_proc_stat() -> Optional[Tuple[float, float, float]]:
 def _cpu_and_iowait(interval: float) -> Tuple[Optional[float], Optional[float]]:
     if psutil is not None:
         times = psutil.cpu_times_percent(interval=interval)
-        return 100.0 - times.idle - getattr(times, "iowait", 0.0), getattr(times, "iowait", None)
+        iowait = getattr(times, "iowait", None)
+        return max(0.0, 100.0 - times.idle - (iowait or 0.0)), iowait
     a = _read_proc_stat()
     if a is None:
         return None, None
@@ -48,7 +50,8 @@ def _cpu_and_iowait(interval: float) -> Tuple[Optional[float], Optional[float]]:
 def _meminfo() -> Dict[str, float]:
     if psutil is not None:
         vm, sw = psutil.virtual_memory(), psutil.swap_memory()
-        return {"mem_percent": vm.percent, "mem_total": vm.total, "swap_percent": sw.percent}
+        return {"mem_percent": vm.percent, "mem_total": vm.total, "swap_percent": sw.percent,
+                "swap_available_bytes": sw.free}
     info: Dict[str, float] = {}
     try:
         with open("/proc/meminfo", encoding="ascii") as fh:
@@ -64,7 +67,9 @@ def _meminfo() -> Dict[str, float]:
     if total:
         out["mem_percent"] = 100.0 * (1 - avail / total)
     if swap_total:
-        out["swap_percent"] = 100.0 * (1 - info.get("SwapFree", 0.0) / swap_total)
+        swap_free = info.get("SwapFree", 0.0)
+        out["swap_available_bytes"] = swap_free
+        out["swap_percent"] = 100.0 * (1 - swap_free / swap_total)
     return out
 
 
@@ -78,23 +83,99 @@ def _top_processes(n: int = 5) -> List[Dict[str, Any]]:
     return procs[:n]
 
 
+def _linux_scheduler(proc: Path) -> Dict[str, int]:
+    fields = {"procs_running": "runnable_processes", "procs_blocked": "io_blocked_processes"}
+    counts = {}
+    try:
+        with (proc / "stat").open(encoding="ascii") as stream:
+            for line in stream:
+                label, _, value = line.partition(" ")
+                if label in fields and value.strip().isdigit():
+                    counts[fields[label]] = int(value)
+    except OSError:
+        return {}
+    return counts
+
+
+def _linux_pressure(proc: Path) -> Dict[str, Dict[str, float]]:
+    pressures = {}
+    for resource in ("cpu", "io", "memory"):
+        try:
+            lines = (proc / "pressure" / resource).read_text(encoding="ascii").splitlines()
+        except OSError:
+            continue
+        average = {}
+        for line in lines:
+            fields = line.split()
+            if not fields or fields[0] not in {"some", "full"}:
+                continue
+            for field in fields[1:]:
+                if field.startswith("avg60="):
+                    try:
+                        percent = float(field.removeprefix("avg60="))
+                    except ValueError:
+                        continue
+                    if 0.0 <= percent <= 100.0:
+                        average[fields[0]] = percent
+        if average:
+            pressures[resource] = average
+    return pressures
+
+
+def _linux_swap_pages(proc: Path) -> Optional[Tuple[int, int]]:
+    counters = {}
+    try:
+        with (proc / "vmstat").open(encoding="ascii") as stream:
+            for line in stream:
+                key, _, value = line.partition(" ")
+                if key in {"pswpin", "pswpout"}:
+                    counters[key] = int(value)
+        return counters["pswpin"], counters["pswpout"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _swap_byte_rates(before: Tuple[int, int], after: Tuple[int, int], seconds: float,
+                     page_size: int) -> Optional[Dict[str, float]]:
+    pages_in = after[0] - before[0]
+    pages_out = after[1] - before[1]
+    if seconds <= 0 or min(pages_in, pages_out) < 0:
+        return None
+    return {"in": pages_in * page_size / seconds, "out": pages_out * page_size / seconds}
+
+
 def collect_metrics(interval: float = 0.5, mounts: Sequence[str] = ("/",)) -> Dict[str, Any]:
     """Collect a snapshot of host metrics."""
+    proc = Path("/proc")
+    start = time.monotonic()
+    swap_before = _linux_swap_pages(proc) if interval > 0 else None
     cpu, iowait = _cpu_and_iowait(interval)
+    swap_after = _linux_swap_pages(proc) if swap_before is not None else None
+    elapsed = time.monotonic() - start
     metrics: Dict[str, Any] = {"cpu_count": os.cpu_count() or 1, "cpu_percent": cpu, "iowait_percent": iowait}
     try:
         metrics["load_avg"] = os.getloadavg()
     except (OSError, AttributeError):
         metrics["load_avg"] = None
     metrics.update(_meminfo())
+    if swap_before is not None and swap_after is not None:
+        if rates := _swap_byte_rates(swap_before, swap_after, elapsed, os.sysconf("SC_PAGE_SIZE")):
+            metrics["swap_io_bytes_per_second"] = rates
+    metrics.update(_linux_scheduler(proc))
+    if pressure := _linux_pressure(proc):
+        metrics["pressure_avg60_percent"] = pressure
     disks = {}
+    available = {}
     for m in mounts:
         try:
             du = shutil.disk_usage(m)
-            disks[m] = 100.0 * du.used / du.total if du.total else 0.0
+            capacity = du.used + du.free
+            disks[m] = 100.0 * du.used / capacity if capacity else 0.0
+            available[m] = du.free
         except OSError:
             continue
     metrics["disk_percent"] = disks
+    metrics["disk_available_bytes"] = available
     metrics["top_processes"] = _top_processes()
     return metrics
 
@@ -118,13 +199,32 @@ def analyze_metrics(metrics: Dict[str, Any], cpu_warn: float = 80.0, mem_warn: f
                                 metrics={"cpu_percent": cpu}))
     load = metrics.get("load_avg")
     ncpu = metrics.get("cpu_count") or 1
-    if load:
+    runnable = metrics.get("runnable_processes")
+    if runnable is not None:
+        per_core = runnable / ncpu
+        if (s := _ramp(per_core, 1.0, 3.0)):
+            items.append(Bottleneck("system", "run-queue", "load",
+                                    f"{runnable} runnable processes on {ncpu} cores", s,
+                                    suggestion="reduce parallel jobs or add CPU capacity",
+                                    metrics={"runnable_processes": runnable, "per_core": per_core}))
+    elif load:
         per_core = load[0] / ncpu
         if (s := _ramp(per_core, 1.0, 3.0)):
             items.append(Bottleneck("system", "run-queue", "load", f"1-min load {load[0]:.2f} on {ncpu} cores "
                                     f"({per_core:.2f}/core)", s,
-                                    suggestion="too many runnable tasks – throttle workers (AIMD) or scale out",
+                                    suggestion="check runnable tasks and I/O stalls before adjusting parallelism",
                                     metrics={"load_avg": list(load), "per_core": per_core}))
+    pressure = metrics.get("pressure_avg60_percent") or {}
+    for resource, kind, warn, critical, suggestion in (
+        ("io", "io-pressure", 20.0, 60.0, "check writeback, storage latency and competing I/O"),
+        ("memory", "memory-stall", 10.0, 35.0, "check reclaim, page faults and active swap traffic"),
+    ):
+        averages = pressure.get(resource) or {}
+        some = averages.get("some", 0.0)
+        if (s := _ramp(some, warn, critical)):
+            items.append(Bottleneck("system", kind, resource,
+                                    f"{resource} stalls affected tasks {some:.1f}% of the last minute (PSI)", s,
+                                    suggestion=suggestion, metrics={"avg60_percent": averages}))
     iow = metrics.get("iowait_percent")
     if iow is not None and (s := _ramp(iow, iowait_warn, 50.0)):
         items.append(Bottleneck("system", "io-wait", "disk-io", f"CPU waiting on I/O {iow:.0f}% of the time", s,
@@ -137,9 +237,13 @@ def analyze_metrics(metrics: Dict[str, Any], cpu_warn: float = 80.0, mem_warn: f
                                 metrics={"mem_percent": mem}))
     swap = metrics.get("swap_percent")
     if swap is not None and (s := _ramp(swap, swap_warn, 90.0)):
+        swap_metrics = {"swap_percent": swap}
+        for field in ("swap_available_bytes", "swap_io_bytes_per_second"):
+            if field in metrics:
+                swap_metrics[field] = metrics[field]
         items.append(Bottleneck("system", "swapping", "swap", f"swap used {swap:.0f}%", s,
-                                suggestion="reduce memory footprint – swapping slows everything down",
-                                metrics={"swap_percent": swap}))
+                                suggestion="check sampled swap traffic and memory pressure before reducing workloads",
+                                metrics=swap_metrics))
     for mount, pct in (metrics.get("disk_percent") or {}).items():
         if (s := _ramp(pct, disk_warn, 99.0)):
             items.append(Bottleneck("system", "disk-full", mount, f"filesystem {mount} {pct:.0f}% full", s,
