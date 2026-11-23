@@ -11,6 +11,7 @@ import os
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .code import analyze_code
+from .delivery import analyze_delivery
 from .ledger import LedgerNotConfigured, findings_to_report, load_events, now_us, parse_duration_seconds, parse_utc_us
 from .models import Report
 from .pipeline import analyze_events, analyze_pipeline
@@ -78,6 +79,12 @@ def build_registry(engine: "Engine") -> ActionRegistry:
                         pipeline_analyze, (Param("spec", "string", required=True,
                                                  description="JSON file with tasks and/or stages (or inline JSON)"),
                                            sev, top), effects=("read",), menu="Pipeline"))
+    reg.register(Action("delivery", "planfile", "Analyze Planfile ticket list or Monag resume JSON",
+                        analyze_delivery, (Param("source", "string", required=True),
+                                           Param("repository", "string", description="owner/repo for a Planfile export"),
+                                           Param("since", "string", description="inclusive creation time with UTC offset"),
+                                           Param("min_repeat", "integer", default=3), sev, top),
+                        effects=("read",), menu="Pipeline"))
     reg.register(Action("pipeline", "urtlog", "Bottlenecks in recorded executions (urtlog events.jsonl)",
                         pipeline_urtlog, (Param("source", "string", required=True,
                                                 description="urtlog/bottlenecks state dir or events.jsonl"),

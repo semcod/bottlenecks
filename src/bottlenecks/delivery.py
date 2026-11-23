@@ -1,0 +1,143 @@
+"""Read-only analysis of Planfile ticket exports and Monag resume snapshots."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .models import Bottleneck, Report
+
+_SLUG = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
+_ID = re.compile(r"[\w.-]{1,96}", re.ASCII)
+_PENDING = {"open", "blocked", "failed", "in_progress", "review", "waiting_input"}
+
+
+def _valid_repository(value):
+    return isinstance(value, str) and bool(_SLUG.fullmatch(value)) and all(
+        part not in {".", ".."} for part in value.split("/")
+    )
+
+
+def _timestamp(value):
+    stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if stamp.tzinfo is None:
+        raise ValueError("timestamps must include a UTC offset")
+    return stamp.astimezone(timezone.utc)
+
+
+def _tickets(report, repo, rows, since, min_repeat):
+    if not isinstance(rows, list):
+        raise ValueError("expected a ticket list")
+    groups = defaultdict(set)
+    blocked = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("invalid ticket record")
+        ticket_id = row.get("id")
+        if not isinstance(ticket_id, str) or not _ID.fullmatch(ticket_id):
+            raise ValueError("invalid ticket ID")
+        if row.get("status") not in _PENDING:
+            continue
+        if since is not None and _timestamp(row.get("created_at")) < since:
+            continue
+        title = row.get("title") or row.get("name")
+        if title and not row.get("identity_collision"):
+            signature = " ".join(title.casefold().split())
+            groups[signature].add(ticket_id)
+        if row["status"] in {"failed", "blocked", "waiting_input"}:
+            blocked.add(ticket_id)
+    for signature, ids in sorted(groups.items()):
+        if len(ids) >= min_repeat:
+            _finding(report, repo, "repeated-ticket-title", ids,
+                     "Pending tickets share a title. Compare source records before consolidating.",
+                     hashlib.sha256(signature.encode()).hexdigest()[:16])
+    if blocked:
+        _finding(report, repo, "blocked-tickets", blocked,
+                 "Planfile reports blocked or failed attempts or input waits. Inspect their recorded reasons.")
+
+
+def _finding(report, repo, kind, ids, message, group=""):
+    location = repo + ("/" + group if group else "")
+    examples = sorted(ids)[:8]
+    identity = hashlib.sha256(json.dumps([repo, kind, group, sorted(ids)]).encode()).hexdigest()
+    scope_digest = hashlib.sha256(repo.encode()).hexdigest()[:16]
+    observation = {"event_type": "delivery.observation", "operation": "delivery.planfile",
+                   "repository": repo, "source_event_id": identity,
+                   "status": "observed" if kind == "repeated-ticket-title" else "blocked",
+                   "failure_code": f"{kind}-{scope_digest}", "occurrences": len(ids),
+                   "summary": message}
+    report.items.append(Bottleneck("pipeline", kind, location, message, 0.6,
+                                   metrics={"count": len(ids), "examples": examples,
+                                            "reflex": observation}))
+
+
+_QUEUE_REASONS = {
+    "dependency_unresolved": "A declared predecessor is unresolved.",
+    "invalid_target_repository": "Planfile could not resolve the target repository.",
+    "ambiguous_lease_state": "Planfile could not establish one lease binding.",
+    "process_envelope": "The worker process envelope is missing or invalid.",
+    "waiting": "A waiting label excludes these tickets.",
+    "status_blocked": "These tickets have explicit blocked status.",
+}
+
+
+def _queue_report(data):
+    repo = data["repository"]
+    if not _valid_repository(repo):
+        raise ValueError("invalid repository in queue snapshot")
+    groups = defaultdict(set)
+    for row in data["skipped"]:
+        kind = row["category"]
+        if kind in _QUEUE_REASONS:
+            ticket = row["id"]
+            if not isinstance(ticket, str) or not _ID.fullmatch(ticket):
+                raise ValueError("invalid ticket ID in queue snapshot")
+            groups[kind].add(ticket)
+    report = Report(summary={"projects_analyzed": 1, "scope": "one executable queue snapshot",
+                             "candidate_count": len(data["candidates"])})
+    for kind, ids in sorted(groups.items()):
+        _finding(report, repo, kind, ids, _QUEUE_REASONS[kind])
+    return report
+
+
+def analyze_delivery(source, repository=None, since=None, min_repeat=3):
+    """Analyze a single native JSON export without following any paths inside it."""
+    with Path(source).open(encoding="utf-8") as handle:
+        data = json.load(handle)
+    if min_repeat < 2:
+        raise ValueError("min_repeat must be at least 2")
+    report = Report(summary={"projects_analyzed": 0, "projects_incomplete": 0})
+    if isinstance(data, list):
+        if not _valid_repository(repository):
+            raise ValueError("provide repository=owner/name for Planfile ticket list JSON")
+        _tickets(report, repository, data, _timestamp(since) if since else None, min_repeat)
+        report.summary["projects_analyzed"] = 1
+        return report
+    if isinstance(data, dict) and data.get("schema") == "planfile.executable-queue/v1":
+        if since or repository:
+            raise ValueError("queue exports already specify a repository and lack creation times for exclusions")
+        return _queue_report(data)
+    if not isinstance(data, dict) or data.get("schema") != "monag.resume/v1":
+        raise ValueError("expected Planfile ticket list, executable queue or Monag resume JSON")
+    if since or repository:
+        raise ValueError("repository and since are for Planfile exports only")
+    root = Path(data["root"])
+    for project in data["projects"]:
+        plan = project["planfile"]
+        if not plan.get("available"):
+            report.summary["projects_incomplete"] += 1
+            continue
+        path = Path(project["path"])
+        repo = path.relative_to(root).as_posix() if path.is_relative_to(root) else None
+        if not _valid_repository(repo):
+            report.summary["projects_incomplete"] += 1
+            continue
+        _tickets(report, repo, plan["remaining_tickets"], None, min_repeat)
+        report.summary["projects_analyzed"] += 1
+        if not plan.get("complete"):
+            report.summary["projects_incomplete"] += 1
+    return report
