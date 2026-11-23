@@ -277,6 +277,29 @@ def test_analyze_events_lineage_and_ops():
     assert report.summary["events"]["critical_path"][0] == "op/proc/svc/extract/v1"
 
 
+def test_urtlog_coverage_separates_point_logs_and_invalid_bounds():
+    stamp = 1_700_000_000_000_000
+    measured = _rec("read", stamp, stamp + 1_000_000)
+    point = dict(measured, urt={"kind": "instant"})
+    invalid = [dict(measured, urt=bounds) for bounds in (
+        {"start": "not-a-time", "end": measured["urt"]["end"]},
+        {"start": measured["urt"]["end"], "end": measured["urt"]["start"]},
+        {"start": 42, "end": measured["urt"]["end"]},
+    )]
+    records = [dict(measured, kind="intent"), _rec("unrelated", stamp, stamp),
+               measured, point, *invalid]
+    report = analyze_events(records, op_prefix="op/proc/svc/read/")
+    assert report.summary["duration_coverage"] == {
+        "parsed_records": 7, "matching_logs": 5, "other_kinds": 1, "outside_prefix": 1,
+        "missing_bounds": 1, "invalid_bounds": 3, "measured": 1,
+    }
+    assert report.summary["events"]["busy_seconds"] == 1
+    assert analyze_events([]).summary["duration_coverage"]["matching_logs"] == 0
+    point_only = analyze_events([point])
+    assert point_only.summary["duration_coverage"]["matching_logs"] == 1
+    assert point_only.summary["events"]["runs"] == 0
+
+
 # ----------------------------------------------------------- urtlog bridge
 def test_urtlog_bridge_mirrors_records(project, monkeypatch):
     appended = []
