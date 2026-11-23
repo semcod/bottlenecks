@@ -11,7 +11,7 @@ Two models are supported:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .models import Bottleneck, Report
 
@@ -230,8 +230,9 @@ def analyze_events(records: Sequence[Mapping[str, Any]], op_prefix: Optional[str
       (``URN_OUT`` of one run feeding ``URN_IN`` of another)
     * ``handoff-latency``   – long idle gap between a producer finishing and its consumer starting
     """
-    runs = _collect_runs(records, op_prefix)
+    runs, coverage = _collect_runs(records, op_prefix)
     report = Report()
+    report.summary["duration_coverage"] = coverage
     if not runs:
         report.summary["events"] = {"runs": 0, "operations": 0}
         return report
@@ -252,20 +253,45 @@ def analyze_events(records: Sequence[Mapping[str, Any]], op_prefix: Optional[str
     return report
 
 
-def _collect_runs(records: Sequence[Mapping[str, Any]], op_prefix: Optional[str]) -> List[Dict[str, Any]]:
+def _collect_runs(records: Sequence[Mapping[str, Any]], op_prefix: Optional[str]
+                  ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     runs = []
+    coverage = {"parsed_records": len(records), "matching_logs": 0, "other_kinds": 0,
+                "outside_prefix": 0, "missing_bounds": 0, "invalid_bounds": 0, "measured": 0}
     for rec in records:
-        op = rec.get("uri", {}).get("op_path", "op/unknown")
-        if rec.get("kind") != "log" or (op_prefix and not op.startswith(op_prefix)):
+        if rec.get("kind") != "log":
+            coverage["other_kinds"] += 1
             continue
-        urt = rec.get("urt", {})
-        start, end = _ts(urt.get("start")), _ts(urt.get("end"))
+        uri = rec.get("uri")
+        op = uri.get("op_path") if isinstance(uri, Mapping) else None
+        op = op if isinstance(op, str) else "op/unknown"
+        if op_prefix and not op.startswith(op_prefix):
+            coverage["outside_prefix"] += 1
+            continue
+        coverage["matching_logs"] += 1
+        urt = rec.get("urt")
+        if not isinstance(urt, Mapping):
+            coverage["invalid_bounds"] += 1
+            continue
+        first, last = urt.get("start"), urt.get("end")
+        if first is None or last is None:
+            coverage["missing_bounds"] += 1
+            continue
+        if not isinstance(first, str) or not isinstance(last, str):
+            coverage["invalid_bounds"] += 1
+            continue
+        try:
+            start, end = _ts(first), _ts(last)
+        except (ValueError, OverflowError, OSError):
+            start = end = None
         if start is None or end is None or end < start:
+            coverage["invalid_bounds"] += 1
             continue
         runs.append({"id": rec.get("event_id"), "op": op, "start": start, "end": end, "dur": end - start,
                      "status": rec.get("status"), "inputs": [r.get("urn") for r in rec.get("inputs") or ()],
                      "outputs": [r.get("urn") for r in rec.get("outputs") or ()]})
-    return runs
+    coverage["measured"] = len(runs)
+    return runs, coverage
 
 
 def _op_stats(items: List[Dict[str, Any]], busy: float) -> Dict[str, Any]:
