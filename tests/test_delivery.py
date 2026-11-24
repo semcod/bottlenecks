@@ -116,3 +116,25 @@ def test_campaign_route_uses_bound_tracker_and_declared_target(tmp_path):
     route, = [item for item in result.report.items if item.kind == "campaign-target"]
     assert route.metrics["reflex"] == observation
     assert route.metrics["examples"] == ["GITHUB-34"]
+
+
+def test_ticket_export_and_monag_match_canonical_queue_execution_waits(tmp_path):
+    rows = [{"id": "T-" + str(i), "status": "open", "execution": {"state": state}}
+            for i, state in enumerate(("blocked", "waiting_input", "waiting_dependency"))]
+    ambiguous = dict(rows[1], id="A")
+    unrelated = [ambiguous, dict(ambiguous, execution=None), dict(rows[0], id="B", status="done"),
+                 dict(rows[2], id="C", identity_collision=True), dict(rows[0], id="D", execution=[]),
+                 dict(rows[0], id="E", execution={"state": []}), dict(rows[0], id="F", execution={"state": "running"})]
+    queue = {"schema": "planfile.executable-queue/v1", "repository": "org/repo",
+             "candidates": [], "skipped": [
+                 {"id": row["id"], "category": "exec_state", "reason": "exec_state:" + row["execution"]["state"]}
+                 for row in rows]}
+    snapshot = {"schema": "monag.resume/v1", "root": "/work", "projects": [
+        {"path": "/work/org/repo", "planfile": {"available": True, "complete": True,
+                                               "remaining_tickets": rows + unrelated}}]}
+    def observations(result):
+        return {i.kind: i.metrics["reflex"] for i in result.report.items}
+    expected = observations(run(tmp_path, queue))
+    assert set(expected) == {"execution_blocked", "waiting_input", "waiting_dependency"}
+    assert observations(run(tmp_path, rows + unrelated, "repository=org/repo")) == expected
+    assert observations(run(tmp_path, snapshot)) == expected
