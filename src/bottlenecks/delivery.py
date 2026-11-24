@@ -13,6 +13,8 @@ from .models import Bottleneck, Report
 
 _SLUG = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
 _ID = re.compile(r"[\w.-]{1,96}", re.ASCII)
+_CAMPAIGN_TITLE = re.compile(r"^\[(?:Autodo|UR-CQRS|URT)\]\[P[0-9]\]\[([^\]]{1,140})\]\s")
+_ISSUE_KEY = re.compile(r"([\w.-]+/[\w.-]+)#[1-9][0-9]*", re.ASCII)
 _PENDING = {"open", "blocked", "failed", "in_progress", "review", "waiting_input"}
 
 
@@ -29,10 +31,32 @@ def _timestamp(value):
     return stamp.astimezone(timezone.utc)
 
 
+def _campaign_target(row, repo, title):
+    match = _CAMPAIGN_TITLE.match(title)
+    if not match or not _valid_repository(match[1]):
+        return None
+    target = match[1].lower()
+    if target == repo.lower():
+        return None
+    # Monag and native Planfile expose the same GitHub issue key in different fields.
+    bindings = row.get("github_bindings")
+    if bindings is None:
+        sync = row.get("sync")
+        github = sync.get("github") if isinstance(sync, dict) else None
+        bindings = [github.get("key")] if isinstance(github, dict) else []
+    if not isinstance(bindings, list) or len(bindings) != 1 or not isinstance(bindings[0], str):
+        return None
+    issue = _ISSUE_KEY.fullmatch(bindings[0])
+    if issue and issue[1].lower() == repo.lower():
+        return target
+    return None
+
+
 def _tickets(report, repo, rows, since, min_repeat):
     if not isinstance(rows, list):
         raise ValueError("expected a ticket list")
     groups = defaultdict(set)
+    campaign_targets = defaultdict(set)
     blocked = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -48,8 +72,14 @@ def _tickets(report, repo, rows, since, min_repeat):
         if title and not row.get("identity_collision"):
             signature = " ".join(title.casefold().split())
             groups[signature].add(ticket_id)
+            target = _campaign_target(row, repo, title)
+            if target:
+                campaign_targets[target].add(ticket_id)
         if row["status"] in {"failed", "blocked", "waiting_input"}:
             blocked.add(ticket_id)
+    for target, ids in sorted(campaign_targets.items()):
+        message = f"Campaign tickets tracked in {repo} name {target} as the implementation repository."
+        _finding(report, repo, "campaign-target", ids, message, target=target)
     for signature, ids in sorted(groups.items()):
         if len(ids) >= min_repeat:
             _finding(report, repo, "repeated-ticket-title", ids,
@@ -60,19 +90,22 @@ def _tickets(report, repo, rows, since, min_repeat):
                  "Planfile reports blocked or failed attempts or input waits. Inspect their recorded reasons.")
 
 
-def _finding(report, repo, kind, ids, message, group=""):
+def _finding(report, repo, kind, ids, message, group="", *, target=None):
     location = repo + ("/" + group if group else "")
     examples = sorted(ids)[:8]
-    identity = hashlib.sha256(json.dumps([repo, kind, group, sorted(ids)]).encode()).hexdigest()
-    scope_digest = hashlib.sha256(repo.encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps([repo, kind, target or group, sorted(ids)]).encode()).hexdigest()
     observation = {"event_type": "delivery.observation", "operation": "delivery.planfile",
-                   "repository": repo, "source_event_id": identity,
-                   "status": "observed" if kind == "repeated-ticket-title" else "blocked",
-                   "failure_code": f"{kind}-{scope_digest}", "occurrences": len(ids),
-                   "summary": message}
-    report.items.append(Bottleneck("pipeline", kind, location, message, 0.6,
-                                   metrics={"count": len(ids), "examples": examples,
-                                            "reflex": observation}))
+                   "repository": target or repo, "source_event_id": identity,
+                   "status": "observed" if target or kind == "repeated-ticket-title" else "blocked",
+                   "occurrences": len(ids), "summary": message}
+    metrics = {"count": len(ids), "examples": examples, "reflex": observation}
+    if target:
+        metrics.update(tracking_repository=repo, target_repository=target)
+        observation["tracking_repository"] = repo
+    else:
+        scope_digest = hashlib.sha256(repo.encode()).hexdigest()[:16]
+        observation["failure_code"] = f"{kind}-{scope_digest}"
+    report.items.append(Bottleneck("pipeline", kind, location, message, 0.1 if target else 0.6, metrics=metrics))
 
 
 _QUEUE_REASONS = {
