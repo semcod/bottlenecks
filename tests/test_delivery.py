@@ -61,6 +61,27 @@ def test_canonical_queue_only_reports_evidenced_blockers(tmp_path):
     assert finding.metrics["examples"] == ["T-4"]
 
 
+def test_queue_emits_reflex_observations_only_for_explicit_blockers(tmp_path):
+    skipped = [
+        {"id": "T-1", "category": "blocked", "reason": "label:blocked"},
+        {"id": "T-2", "category": "exec_state", "reason": "exec_state:waiting_dependency"},
+        {"id": "T-3", "category": "exec_state", "reason": "exec_state:queued"},
+        {"id": "T-4", "category": "exec_state"},
+    ]
+    data = {"schema": "planfile.executable-queue/v1", "repository": "org/repo",
+            "candidates": [], "skipped": skipped}
+    result = run(tmp_path, data)
+    assert result.success
+    found = {item.kind: item.metrics for item in result.report.items}
+    assert {kind: m["examples"] for kind, m in found.items()} == {
+        "blocked": ["T-1"], "waiting_dependency": ["T-2"],
+    }
+    for metrics in found.values():
+        assert metrics["reflex"]["status"] == "blocked"
+        assert metrics["examples"][0] in metrics["reflex"]["summary"]
+    assert run(tmp_path, dict(data, skipped=list(reversed(skipped)))).data == result.data
+
+
 def test_campaign_route_uses_bound_tracker_and_declared_target(tmp_path):
     title = "[Autodo][P0][dev/worker] private issue contents"
     ticket = {"id": "GITHUB-34", "name": title, "status": "open", "sync": {"github": {"key": "dev/tracker#34"}}}

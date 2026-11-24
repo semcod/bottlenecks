@@ -115,6 +115,8 @@ _QUEUE_REASONS = {
     "process_envelope": "The worker process envelope is missing or invalid.",
     "waiting": "A waiting label excludes these tickets.",
     "status_blocked": "These tickets have explicit blocked status.",
+    "blocked": "Planfile excluded these tickets because they carry the blocked label.",
+    "waiting_dependency": "Execution is waiting for a dependency.",
 }
 
 
@@ -125,6 +127,8 @@ def _queue_report(data):
     groups = defaultdict(set)
     for row in data["skipped"]:
         kind = row["category"]
+        if kind == "exec_state" and row.get("reason") == "exec_state:waiting_dependency":
+            kind = "waiting_dependency"
         if kind in _QUEUE_REASONS:
             ticket = row["id"]
             if not isinstance(ticket, str) or not _ID.fullmatch(ticket):
@@ -133,7 +137,8 @@ def _queue_report(data):
     report = Report(summary={"projects_analyzed": 1, "scope": "one executable queue snapshot",
                              "candidate_count": len(data["candidates"])})
     for kind, ids in sorted(groups.items()):
-        _finding(report, repo, kind, ids, _QUEUE_REASONS[kind])
+        examples = ", ".join(sorted(ids)[:8])
+        _finding(report, repo, kind, ids, f"{_QUEUE_REASONS[kind]} Affected tickets include {examples}.")
     return report
 
 
