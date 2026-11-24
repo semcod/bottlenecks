@@ -67,6 +67,12 @@ def test_queue_emits_reflex_observations_only_for_explicit_blockers(tmp_path):
         {"id": "T-2", "category": "exec_state", "reason": "exec_state:waiting_dependency"},
         {"id": "T-3", "category": "exec_state", "reason": "exec_state:queued"},
         {"id": "T-4", "category": "exec_state"},
+        {"id": "T-5", "category": "exec_state", "reason": "exec_state:waiting_input"},
+        {"id": "T-6", "category": "exec_state", "reason": "exec_state:blocked"},
+        {"id": "T-7", "category": "exec_state", "reason": "exec_state:running"},
+        {"id": "T-8", "category": "exec_state", "reason": "exec_state:done"},
+        {"id": "T-9", "category": "exec_state", "reason": "exec_state:other"},
+        {"id": "T-10", "category": "exec_state", "reason": []},
     ]
     data = {"schema": "planfile.executable-queue/v1", "repository": "org/repo",
             "candidates": [], "skipped": skipped}
@@ -75,6 +81,7 @@ def test_queue_emits_reflex_observations_only_for_explicit_blockers(tmp_path):
     found = {item.kind: item.metrics for item in result.report.items}
     assert {kind: m["examples"] for kind, m in found.items()} == {
         "blocked": ["T-1"], "waiting_dependency": ["T-2"],
+        "waiting_input": ["T-5"], "execution_blocked": ["T-6"],
     }
     for metrics in found.values():
         assert metrics["reflex"]["status"] == "blocked"
