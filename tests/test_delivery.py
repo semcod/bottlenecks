@@ -59,3 +59,32 @@ def test_canonical_queue_only_reports_evidenced_blockers(tmp_path):
     finding, = result.report.items
     assert finding.kind == "dependency_unresolved"
     assert finding.metrics["examples"] == ["T-4"]
+
+
+def test_campaign_route_uses_bound_tracker_and_declared_target(tmp_path):
+    title = "[Autodo][P0][dev/worker] private issue contents"
+    ticket = {"id": "GITHUB-34", "name": title, "status": "open", "sync": {"github": {"key": "dev/tracker#34"}}}
+    result = run(tmp_path, [ticket, ticket], "repository=dev/tracker")
+    routing, = [item for item in result.report.items if item.kind == "campaign-target"]
+    assert routing.metrics["count"] == 1
+    assert routing.metrics["tracking_repository"] == "dev/tracker"
+    assert routing.metrics["target_repository"] == "dev/worker"
+    observation = routing.metrics["reflex"]
+    assert observation["repository"] == "dev/worker"
+    assert observation["status"] == "observed"
+    assert "failure_code" not in observation
+    assert "private issue contents" not in json.dumps(observation)
+    row = {"id": "GITHUB-34", "title": title, "status": "open", "github_bindings": ["dev/tracker#34"]}
+    project = {"path": "/work/dev/tracker", "planfile": {"available": True, "complete": True,
+               "remaining_tickets": [row, dict(row, id="X", identity_collision=True),
+                                     dict(row, id="Y", github_bindings=["dev/tracker#34", "dev/other#9"]),
+                                     dict(row, id="U", github_bindings=[]),
+                                     dict(row, id="Z", github_bindings=["dev/other#34"]),
+                                     dict(row, id="M", title="[URT][P1][../bad] hidden"),
+                                     dict(row, id="Q", status="done"),
+                                     dict(row, id="R", title="[Autodo][P0][dev/tracker] own ticket")]}}
+    snapshot = {"schema": "monag.resume/v1", "root": "/work", "projects": [project]}
+    result = run(tmp_path, snapshot)
+    route, = [item for item in result.report.items if item.kind == "campaign-target"]
+    assert route.metrics["reflex"] == observation
+    assert route.metrics["examples"] == ["GITHUB-34"]
