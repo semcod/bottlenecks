@@ -117,6 +117,15 @@ _QUEUE_REASONS = {
     "status_blocked": "These tickets have explicit blocked status.",
     "blocked": "Planfile excluded these tickets because they carry the blocked label.",
     "waiting_dependency": "Execution is waiting for a dependency.",
+    "waiting_input": "Execution is waiting for input.",
+    "execution_blocked": "Planfile reports that execution is blocked.",
+}
+
+
+_EXECUTION_BLOCKERS = {
+    "exec_state:blocked": "execution_blocked",
+    "exec_state:waiting_input": "waiting_input",
+    "exec_state:waiting_dependency": "waiting_dependency",
 }
 
 
@@ -127,8 +136,9 @@ def _queue_report(data):
     groups = defaultdict(set)
     for row in data["skipped"]:
         kind = row["category"]
-        if kind == "exec_state" and row.get("reason") == "exec_state:waiting_dependency":
-            kind = "waiting_dependency"
+        reason = row.get("reason")
+        if kind == "exec_state" and isinstance(reason, str):
+            kind = _EXECUTION_BLOCKERS.get(reason, kind)
         if kind in _QUEUE_REASONS:
             ticket = row["id"]
             if not isinstance(ticket, str) or not _ID.fullmatch(ticket):
