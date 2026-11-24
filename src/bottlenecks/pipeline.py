@@ -219,6 +219,48 @@ def _percentile(values: List[float], q: float) -> float:
     return ordered[idx]
 
 
+def _check_episode_report(records: Sequence[Mapping[str, Any]], op_prefix: Optional[str]) -> Report:
+    """Match explicit URTLog check transitions within the supplied event window."""
+    opened = {}
+    recovered = set()
+    for record in records:
+        if record.get("kind") != "log" or record.get("source") != "reflex-check":
+            continue
+        uri, meta = record.get("uri"), record.get("metadata")
+        if not isinstance(uri, Mapping) or not isinstance(meta, Mapping):
+            continue
+        op, episode = uri.get("op_path"), meta.get("episode")
+        repo, owner, target = record.get("repository"), record.get("owner_principal"), meta.get("target")
+        if not all(isinstance(v, str) and v for v in (repo, owner, target, op, episode)):
+            continue
+        if not op.startswith("op/check/reflex/") or (op_prefix and not op.startswith(op_prefix)):
+            continue
+        key = (repo, owner, target, op, episode)
+        transition = (meta.get("transition"), record.get("status"))
+        if transition == ("opened", "failed") and record.get("event_id") == episode:
+            opened.setdefault(key, meta)
+        elif transition == ("recovered", "succeeded") and record.get("causation_id") == episode:
+            recovered.add(key)
+
+    report = Report()
+    outstanding = sorted(opened.keys() - recovered)
+    report.summary["check_episodes"] = {"opened": len(opened), "recovered": len(opened) - len(outstanding),
+                                        "without_observed_recovery": len(outstanding)}
+    for key in outstanding:
+        repo, owner, target, op, episode = key
+        metrics = {"repository": repo, "principal": owner, "target": target, "episode": episode}
+        category = opened[key].get("failure_category")
+        if isinstance(category, str):
+            metrics["failure_category"] = category
+        report.items.append(Bottleneck(
+            domain="pipeline", kind="check-without-observed-recovery", location=op, score=0.6,
+            message=f"Check failed for {repo} ({target}). This input contains no matching recovery.",
+            suggestion="Inspect the opening evidence and the latest result for this check.",
+            metrics=metrics,
+        ))
+    return report
+
+
 def analyze_events(records: Sequence[Mapping[str, Any]], op_prefix: Optional[str] = None,
                    min_share: float = 0.1) -> Report:
     """Find bottlenecks in executed operations recorded as urtlog ``LOG`` records.
@@ -229,9 +271,10 @@ def analyze_events(records: Sequence[Mapping[str, Any]], op_prefix: Optional[str
     * ``critical-operation`` – on the critical path of the URN lineage DAG
       (``URN_OUT`` of one run feeding ``URN_IN`` of another)
     * ``handoff-latency``   – long idle gap between a producer finishing and its consumer starting
+    * ``check-without-observed-recovery`` – an opening failure without a matching recovery in this input
     """
     runs, coverage = _collect_runs(records, op_prefix)
-    report = Report()
+    report = _check_episode_report(records, op_prefix)
     report.summary["duration_coverage"] = coverage
     if not runs:
         report.summary["events"] = {"runs": 0, "operations": 0}
