@@ -132,11 +132,11 @@ class IntentParser:
 
     # slots --------------------------------------------------------------
     def is_negated(self, text: str) -> bool:
-        folded = fold(text)
+        folded = _intent_text(text)
         return bool(self.negation.matches(_words(folded), folded))
 
     def extract_slots(self, text: str, stem_words: Sequence[str] = ()) -> Slots:
-        folded = fold(text)
+        folded = _intent_text(text)
         slots = Slots(paths=_extract_paths(text, stem_words), severity=self._severity(folded),
                       top=_extract_top(folded), interval=_extract_interval(folded))
         slots.every_seconds = self._every(folded)
@@ -207,7 +207,7 @@ class IntentParser:
         direct = self._direct_dsl(clean)
         if direct is not None:
             return direct
-        folded = fold(clean)
+        folded = _intent_text(clean)
         words = _words(folded)
         if self.negation.matches(words, folded):
             self.last_trace = {"rejected": "negation"}
@@ -271,16 +271,36 @@ def _infer_from_paths(paths: Sequence[str]) -> Optional[str]:
     return next((action for kind, action in _INFER_ORDER if kind in kinds), None)
 
 
+_PATH_TOKEN = re.compile(r"[\w./~:\\-]+")
+
+
+def _path_spelling(raw: str) -> str:
+    return raw if raw in (".", "..") else raw.rstrip(".,;:!?")
+
+
+def _explicit_path(token: str) -> bool:
+    return token.lower() not in ("i/o", "w/o") and (
+        "/" in token or "\\" in token or token.startswith((".", "~")) or token.lower().endswith(_PATH_EXT)
+    )
+
+
+def _intent_text(text: str) -> str:
+    def mask_path(match: re.Match) -> str:
+        raw = match.group()
+        return " " if _explicit_path(_path_spelling(raw)) else raw
+
+    return fold(_PATH_TOKEN.sub(mask_path, text))
+
+
 def _extract_paths(text: str, stem_words: Sequence[str]) -> List[str]:
     paths = []
-    for raw in re.findall(r"[\w./~:\\-]+", text):
-        token = raw if raw in (".", "..") else raw.rstrip(".,;:!?")
+    for raw in _PATH_TOKEN.findall(text):
+        token = _path_spelling(raw)
         if not token or token.lower() in ("i/o", "w/o"):
             continue
-        syntactic = "/" in token or token.startswith((".", "~")) or token.lower().endswith(_PATH_EXT)
         on_disk = (fold(token) not in stem_words and len(token) > 1 and not token.isdigit()
                    and os.path.exists(token))
-        if syntactic or on_disk:
+        if _explicit_path(token) or on_disk:
             paths.append(os.path.expanduser(token))
     return paths
 
@@ -324,7 +344,7 @@ class SemanticCache:
 
     def _normalise(self, text: str) -> Tuple[Tuple[str, ...], Slots, bool]:
         slots = self.parser.extract_slots(text)
-        folded = fold(text)
+        folded = _intent_text(text)
         for p in slots.paths:
             folded = folded.replace(fold(p), " ")
         folded = re.sub(r"\d+", " <n> ", folded)

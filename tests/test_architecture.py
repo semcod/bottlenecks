@@ -118,6 +118,18 @@ def test_nl_fast_path(engine, query, action, expect):
         assert "min_severity" not in cmd.arguments  # "ścieżka krytyczna" is not a severity
 
 
+def test_explicit_paths_do_not_supply_intent_severity_or_negation(engine, tmp_path):
+    path = tmp_path / "urtlog" / "executions" / "never" / "critical" / "src"
+    path.mkdir(parents=True)
+    cmd = engine.parser.parse(f"pokaż wąskie gardła w kodzie {path}")
+    assert cmd.action_id == "code.scan"
+    assert cmd.arguments == {"path": [str(path)]}
+    assert engine.parser.parse(str(path)).action_id == "code.scan"
+    assert not engine.parser.is_negated(f"skanuj kod {path}")
+    assert engine.parser.is_negated(f"nie skanuj kodu {path}")
+    assert engine.parser.parse(f"find urtlog events {path}").action_id == "pipeline.urtlog"
+
+
 def test_nl_schedule_and_confirmation(engine):
     cmd = engine.parser.parse("skanuj kod src co 5 minut")
     assert cmd.action_id == "plan.schedule" and cmd.arguments["every"] == "PT300S"
