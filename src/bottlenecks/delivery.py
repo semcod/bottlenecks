@@ -57,6 +57,7 @@ def _tickets(report, repo, rows, since, min_repeat):
         raise ValueError("expected a ticket list")
     groups = defaultdict(set)
     campaign_targets = defaultdict(set)
+    ticket_waits = defaultdict(set)
     blocked = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -65,9 +66,16 @@ def _tickets(report, repo, rows, since, min_repeat):
         if not isinstance(ticket_id, str) or not _ID.fullmatch(ticket_id):
             raise ValueError("invalid ticket ID")
         if row.get("status") not in _PENDING:
+            ticket_waits[ticket_id].add(None)
             continue
         if since is not None and _timestamp(row.get("created_at")) < since:
             continue
+        execution = row.get("execution")
+        state = execution.get("state") if isinstance(execution, dict) else None
+        blocker = None
+        if row["status"] == "open" and not row.get("identity_collision") and isinstance(state, str):
+            blocker = _EXECUTION_BLOCKERS.get("exec_state:" + state)
+        ticket_waits[ticket_id].add(blocker)
         title = row.get("title") or row.get("name")
         if title and not row.get("identity_collision"):
             signature = " ".join(title.casefold().split())
@@ -77,6 +85,11 @@ def _tickets(report, repo, rows, since, min_repeat):
                 campaign_targets[target].add(ticket_id)
         if row["status"] in {"failed", "blocked", "waiting_input"}:
             blocked.add(ticket_id)
+    waits = defaultdict(set)
+    for ticket_id, reasons in ticket_waits.items():
+        if len(reasons) == 1 and None not in reasons:
+            waits[next(iter(reasons))].add(ticket_id)
+    _queue_findings(report, repo, waits)
     for target, ids in sorted(campaign_targets.items()):
         message = f"Campaign tickets tracked in {repo} name {target} as the implementation repository."
         _finding(report, repo, "campaign-target", ids, message, target=target)
@@ -129,6 +142,12 @@ _EXECUTION_BLOCKERS = {
 }
 
 
+def _queue_findings(report, repo, groups):
+    for kind, ids in sorted(groups.items()):
+        examples = ", ".join(sorted(ids)[:8])
+        _finding(report, repo, kind, ids, f"{_QUEUE_REASONS[kind]} Affected tickets include {examples}.")
+
+
 def _queue_report(data):
     repo = data["repository"]
     if not _valid_repository(repo):
@@ -146,9 +165,7 @@ def _queue_report(data):
             groups[kind].add(ticket)
     report = Report(summary={"projects_analyzed": 1, "scope": "one executable queue snapshot",
                              "candidate_count": len(data["candidates"])})
-    for kind, ids in sorted(groups.items()):
-        examples = ", ".join(sorted(ids)[:8])
-        _finding(report, repo, kind, ids, f"{_QUEUE_REASONS[kind]} Affected tickets include {examples}.")
+    _queue_findings(report, repo, groups)
     return report
 
 
